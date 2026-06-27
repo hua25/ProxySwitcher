@@ -47,6 +47,7 @@ enum L10n {
 
     static var languageMenu: String { isChinese ? "语言" : "Language" }
     static var followSystem: String { isChinese ? "跟随系统" : "Follow System" }
+    static var applying: String { isChinese ? "正在应用..." : "Applying..." }
     static var systemProxyEnabled: String { isChinese ? "系统代理：已开启" : "System Proxy: Enabled" }
     static var systemProxyDisabled: String { isChinese ? "系统代理：已关闭" : "System Proxy: Disabled" }
     static var systemProxyMixed: String { isChinese ? "系统代理：不一致" : "System Proxy: Mixed" }
@@ -62,12 +63,15 @@ enum L10n {
     static var copyDisableCommand: String { isChinese ? "复制关闭命令" : "Copy Disable Command" }
     static var quit: String { isChinese ? "退出 ProxySwitcher" : "Quit ProxySwitcher" }
     static var current: String { isChinese ? "当前" : "Current" }
+    static var primaryService: String { isChinese ? "主网络服务" : "Primary Service" }
     static var saved: String { isChinese ? "保存配置" : "Saved" }
     static var matchesCurrent: String { isChinese ? "与当前一致" : "matches current" }
     static var differsFromCurrent: String { isChinese ? "与当前不同" : "differs from current" }
     static var mixedAcrossServices: String { isChinese ? "各网络服务不一致" : "Mixed across services" }
     static var unknown: String { isChinese ? "未知" : "Unknown" }
-    static var off: String { isChinese ? "关闭" : "Off" }
+    static var proxyOff: String { isChinese ? "代理关闭" : "Proxy Off" }
+    static var protocolOn: String { isChinese ? "开" : "On" }
+    static var protocolOff: String { isChinese ? "关" : "Off" }
     static var serviceCountSuffix: String { isChinese ? "个网络服务" : "service(s)" }
     static var cancel: String { isChinese ? "取消" : "Cancel" }
     static var save: String { isChinese ? "保存" : "Save" }

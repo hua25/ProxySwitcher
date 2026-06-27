@@ -4,6 +4,38 @@ public protocol NetworkSetupRunning {
     func run(arguments: [String]) throws -> String
 }
 
+public protocol CommandRunning {
+    func run(executablePath: String, arguments: [String]) throws -> String
+}
+
+public struct ProcessCommandRunner: CommandRunning {
+    public init() {}
+
+    public func run(executablePath: String, arguments: [String]) throws -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executablePath)
+        process.arguments = arguments
+
+        let output = Pipe()
+        let error = Pipe()
+        process.standardOutput = output
+        process.standardError = error
+
+        try process.run()
+        process.waitUntilExit()
+
+        let outputText = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let errorText = String(data: error.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+
+        guard process.terminationStatus == 0 else {
+            let message = errorText.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw NetworkSetupError.commandFailed(message.isEmpty ? outputText : message)
+        }
+
+        return outputText
+    }
+}
+
 public struct ProcessNetworkSetupRunner: NetworkSetupRunning {
     public init() {}
 
@@ -53,9 +85,14 @@ public enum NetworkSetupError: LocalizedError {
 
 public final class NetworkSetupClient {
     private let runner: NetworkSetupRunning
+    private let commandRunner: CommandRunning
 
-    public init(runner: NetworkSetupRunning = ProcessNetworkSetupRunner()) {
+    public init(
+        runner: NetworkSetupRunning = ProcessNetworkSetupRunner(),
+        commandRunner: CommandRunning = ProcessCommandRunner()
+    ) {
         self.runner = runner
+        self.commandRunner = commandRunner
     }
 
     public func enabledNetworkServices() throws -> [String] {
@@ -70,8 +107,20 @@ public final class NetworkSetupClient {
             }
     }
 
+    public func targetNetworkServices() throws -> [String] {
+        let enabledServices = try enabledNetworkServices()
+        guard let primaryService = try? primaryNetworkService(enabledServices: enabledServices),
+              enabledServices.contains(primaryService)
+        else {
+            return enabledServices
+        }
+        return [primaryService]
+    }
+
     public func snapshot(configuration: ProxyConfiguration) throws -> SystemProxySnapshot {
-        let services = try enabledNetworkServices().map { service in
+        let enabledServices = try enabledNetworkServices()
+        let primaryService = try? primaryNetworkService(enabledServices: enabledServices)
+        let services = try enabledServices.map { service in
             NetworkServiceProxyStatus(
                 serviceName: service,
                 http: try readEndpoint(service: service, arguments: ["-getwebproxy", service]),
@@ -80,7 +129,7 @@ public final class NetworkSetupClient {
             )
         }
 
-        return SystemProxySnapshot(services: services, configuration: configuration)
+        return SystemProxySnapshot(services: services, configuration: configuration, primaryServiceName: primaryService)
     }
 
     public func enable(configuration: ProxyConfiguration) throws {
@@ -88,7 +137,7 @@ public final class NetworkSetupClient {
             throw NetworkSetupError.commandFailed(error)
         }
 
-        for service in try enabledNetworkServices() {
+        for service in try targetNetworkServices() {
             if let port = configuration.httpPort {
                 _ = try runner.run(arguments: ["-setwebproxy", service, configuration.normalizedHost, "\(port)"])
                 _ = try runner.run(arguments: ["-setwebproxystate", service, "on"])
@@ -113,7 +162,7 @@ public final class NetworkSetupClient {
     }
 
     public func disable() throws {
-        for service in try enabledNetworkServices() {
+        for service in try targetNetworkServices() {
             _ = try runner.run(arguments: ["-setwebproxystate", service, "off"])
             _ = try runner.run(arguments: ["-setsecurewebproxystate", service, "off"])
             _ = try runner.run(arguments: ["-setsocksfirewallproxystate", service, "off"])
@@ -138,9 +187,72 @@ public final class NetworkSetupClient {
         }
 
         return ProxyEndpoint(
-            enabled: enabled.caseInsensitiveCompare("Yes") == .orderedSame,
+            enabled: parseEnabled(enabled),
             server: values["Server"].flatMap { $0.isEmpty ? nil : $0 },
             port: values["Port"].flatMap(Int.init)
         )
+    }
+
+    private func parseEnabled(_ value: String) -> Bool {
+        switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "yes", "y", "true", "1", "on", "enabled":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func primaryNetworkService(enabledServices: [String]) throws -> String? {
+        guard let defaultDevice = try defaultNetworkDevice() else {
+            return nil
+        }
+
+        let output = try runner.run(arguments: ["-listallhardwareports"])
+        guard let serviceName = networkServiceName(forDevice: defaultDevice, hardwarePortsOutput: output),
+              enabledServices.contains(serviceName)
+        else {
+            return nil
+        }
+        return serviceName
+    }
+
+    private func defaultNetworkDevice() throws -> String? {
+        let output = try commandRunner.run(executablePath: "/sbin/route", arguments: ["-n", "get", "default"])
+        for line in output.split(separator: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.hasPrefix("interface:") else {
+                continue
+            }
+
+            return trimmed
+                .replacingOccurrences(of: "interface:", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        return nil
+    }
+
+    private func networkServiceName(forDevice device: String, hardwarePortsOutput: String) -> String? {
+        var currentHardwarePort: String?
+
+        for line in hardwarePortsOutput.split(separator: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            if trimmed.hasPrefix("Hardware Port:") {
+                currentHardwarePort = trimmed
+                    .replacingOccurrences(of: "Hardware Port:", with: "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            } else if trimmed.hasPrefix("Device:") {
+                let currentDevice = trimmed
+                    .replacingOccurrences(of: "Device:", with: "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+
+                if currentDevice == device {
+                    return currentHardwarePort
+                }
+            }
+        }
+
+        return nil
     }
 }

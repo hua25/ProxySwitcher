@@ -163,31 +163,36 @@ public enum OverallProxyState: Equatable {
 public struct SystemProxySnapshot: Equatable {
     public var services: [NetworkServiceProxyStatus]
     public var configuration: ProxyConfiguration
+    public var primaryServiceName: String?
 
-    public init(services: [NetworkServiceProxyStatus], configuration: ProxyConfiguration) {
+    public init(services: [NetworkServiceProxyStatus], configuration: ProxyConfiguration, primaryServiceName: String? = nil) {
         self.services = services
         self.configuration = configuration
+        self.primaryServiceName = primaryServiceName
     }
 
     public var overallState: OverallProxyState {
-        guard !services.isEmpty else {
+        guard let primaryService else {
             return .unknown
         }
 
-        let disabledCount = services.filter { !$0.hasAnyEnabledProxy() }.count
-        if disabledCount == services.count {
-            return .disabled
-        }
-
-        let signatures = services.map(\.enabledProxySignature)
-        if signatures.dropFirst().allSatisfy({ $0 == signatures[0] }) {
-            return .enabled
-        } else {
-            return .mixed
-        }
+        return primaryService.hasAnyEnabledProxy() ? .enabled : .disabled
     }
 
     public var allServicesMatchConfiguration: Bool {
         !services.isEmpty && services.allSatisfy { $0.matches(configuration) }
+    }
+
+    public var primaryService: NetworkServiceProxyStatus? {
+        if let primaryServiceName,
+           let service = services.first(where: { $0.serviceName == primaryServiceName }) {
+            return service
+        }
+
+        return services.first
+    }
+
+    public var primaryServiceMatchesConfiguration: Bool {
+        primaryService?.matches(configuration) == true
     }
 }

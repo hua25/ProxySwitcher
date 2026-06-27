@@ -38,7 +38,7 @@ final class ProxyConfigurationTests: XCTestCase {
         XCTAssertFalse(snapshot.allServicesMatchConfiguration)
     }
 
-    func testMixedStateMeansServicesDisagree() {
+    func testStateUsesPrimaryServiceWhenServicesDisagree() {
         let configuration = ProxyConfiguration(host: "127.0.0.1", httpPort: 7890, httpsPort: nil, socksPort: nil)
         let wifi = NetworkServiceProxyStatus(
             serviceName: "Wi-Fi",
@@ -53,6 +53,9 @@ final class ProxyConfigurationTests: XCTestCase {
             socks: ProxyEndpoint(enabled: false, server: nil, port: nil)
         )
 
-        XCTAssertEqual(SystemProxySnapshot(services: [wifi, ethernet], configuration: configuration).overallState, .mixed)
+        let snapshot = SystemProxySnapshot(services: [wifi, ethernet], configuration: configuration, primaryServiceName: "Ethernet")
+
+        XCTAssertEqual(snapshot.overallState, .disabled)
+        XCTAssertEqual(snapshot.primaryService?.serviceName, "Ethernet")
     }
 }

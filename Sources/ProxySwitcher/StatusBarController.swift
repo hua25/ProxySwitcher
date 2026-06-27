@@ -13,6 +13,7 @@ final class StatusBarController: NSObject {
     private var lastSnapshot: SystemProxySnapshot?
     private var lastError: String?
     private var isRefreshing = false
+    private var isApplying = false
 
     init(store: ConfigurationStore = ConfigurationStore(), networkSetup: NetworkSetupClient = NetworkSetupClient()) {
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -123,6 +124,12 @@ final class StatusBarController: NSObject {
             menu.addItem(refreshingItem)
         }
 
+        if isApplying {
+            let applyingItem = NSMenuItem(title: L10n.applying, action: nil, keyEquivalent: "")
+            applyingItem.isEnabled = false
+            menu.addItem(applyingItem)
+        }
+
         if let detail = statusDetail() {
             let detailItem = NSMenuItem(title: detail, action: nil, keyEquivalent: "")
             detailItem.isEnabled = false
@@ -136,7 +143,8 @@ final class StatusBarController: NSObject {
 
             let servicesMenu = NSMenu()
             for service in snapshot.services {
-                let item = NSMenuItem(title: service.currentProxyDescription, action: nil, keyEquivalent: "")
+                let isPrimary = service.serviceName == snapshot.primaryService?.serviceName
+                let item = NSMenuItem(title: service.currentProxyDescription(isPrimary: isPrimary), action: nil, keyEquivalent: "")
                 item.isEnabled = false
                 servicesMenu.addItem(item)
             }
@@ -211,17 +219,13 @@ final class StatusBarController: NSObject {
         }
 
         let serviceCount = snapshot.services.count
-        let current: String
-        if snapshot.overallState == .mixed {
-            current = L10n.mixedAcrossServices
-        } else {
-            current = snapshot.services.first?.currentProxyEndpointsDescription ?? L10n.unknown
-        }
-        return "\(serviceCount) \(L10n.serviceCountSuffix), \(L10n.current): \(current)"
+        let primaryName = snapshot.primaryService?.serviceName ?? L10n.unknown
+        let current = snapshot.primaryService?.currentProxyEndpointsDescription ?? L10n.unknown
+        return "\(serviceCount) \(L10n.serviceCountSuffix), \(L10n.primaryService): \(primaryName), \(L10n.current): \(current)"
     }
 
     private func savedConfigurationDetail(snapshot: SystemProxySnapshot) -> String {
-        let matchText = snapshot.allServicesMatchConfiguration ? L10n.matchesCurrent : L10n.differsFromCurrent
+        let matchText = snapshot.primaryServiceMatchesConfiguration ? L10n.matchesCurrent : L10n.differsFromCurrent
         return "\(L10n.saved): \(configuration.savedProxyDescription) (\(matchText))"
     }
 
@@ -243,29 +247,57 @@ final class StatusBarController: NSObject {
     }
 
     @objc private func enableSystemProxy() {
-        do {
-            configuration = store.load()
-            if let error = configuration.validationError() {
-                showError(L10n.localizedValidationError(error))
-                return
-            }
-            try networkSetup.enable(configuration: configuration)
-            refreshStatusInBackground(rebuildOpenMenu: true)
-        } catch {
-            lastError = error.localizedDescription
-            updateIcon()
-            showError(error.localizedDescription)
+        let loadedConfiguration = store.load()
+        if let error = loadedConfiguration.validationError() {
+            showError(L10n.localizedValidationError(error))
+            return
+        }
+
+        applySystemProxyChange { [networkSetup] in
+            try networkSetup.enable(configuration: loadedConfiguration)
         }
     }
 
     @objc private func disableSystemProxy() {
-        do {
+        applySystemProxyChange { [networkSetup] in
             try networkSetup.disable()
-            refreshStatusInBackground(rebuildOpenMenu: true)
-        } catch {
-            lastError = error.localizedDescription
-            updateIcon()
-            showError(error.localizedDescription)
+        }
+    }
+
+    private func applySystemProxyChange(_ change: @escaping () throws -> Void) {
+        guard !isApplying else {
+            return
+        }
+
+        isApplying = true
+        if let menu = statusItem.menu {
+            rebuildMenu(menu)
+        }
+
+        refreshQueue.async { [weak self] in
+            do {
+                try change()
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else {
+                        return
+                    }
+                    self.isApplying = false
+                    self.refreshStatusInBackground(rebuildOpenMenu: true)
+                }
+            } catch {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else {
+                        return
+                    }
+                    self.isApplying = false
+                    self.lastError = error.localizedDescription
+                    self.updateIcon()
+                    if let menu = self.statusItem.menu {
+                        self.rebuildMenu(menu)
+                    }
+                    self.showError(error.localizedDescription)
+                }
+            }
         }
     }
 
@@ -327,31 +359,30 @@ private extension ProxyConfiguration {
 }
 
 private extension NetworkServiceProxyStatus {
-    var currentProxyDescription: String {
-        "\(serviceName): \(currentProxyEndpointsDescription)"
+    func currentProxyDescription(isPrimary: Bool) -> String {
+        let prefix = isPrimary ? "* " : ""
+        return "\(prefix)\(serviceName): \(currentProxyEndpointsDescription)"
     }
 
     var currentProxyEndpointsDescription: String {
-        let endpoints = [
+        if !hasAnyEnabledProxy() {
+            return L10n.proxyOff
+        }
+
+        return [
             endpointDescription(name: "HTTP", endpoint: http),
             endpointDescription(name: "HTTPS", endpoint: https),
             endpointDescription(name: "SOCKS", endpoint: socks)
-        ].filter { !$0.isEmpty }
-
-        if endpoints.isEmpty {
-            return L10n.off
-        }
-
-        return endpoints.joined(separator: ", ")
+        ].joined(separator: ", ")
     }
 
     func endpointDescription(name: String, endpoint: ProxyEndpoint) -> String {
         guard endpoint.enabled else {
-            return ""
+            return "\(name): \(L10n.protocolOff)"
         }
 
         let server = endpoint.server ?? "-"
         let port = endpoint.port.map(String.init) ?? "-"
-        return "\(name) \(server):\(port)"
+        return "\(name): \(L10n.protocolOn) \(server):\(port)"
     }
 }
